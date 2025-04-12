@@ -1,9 +1,10 @@
+from google.adk.agents.llm_agent import LlmAgent
 import os
-import pickle
 import logging
+from dotenv import load_dotenv
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
-from dotenv import load_dotenv
+import pickle
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -11,34 +12,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from dateutil import parser
 
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.genai import types
-import json
-import asyncio
-import google.generativeai as genai
-import traceback
-
-# Configuración de logging principal (nivel WARNING para producción)
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Reducir verbosidad de bibliotecas (ya está bien en WARNING/ERROR)
-logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
-logging.getLogger('googleapiclient.discovery').setLevel(logging.WARNING) 
-logging.getLogger('google.auth.transport.requests').setLevel(logging.WARNING)
-logging.getLogger('google.adk').setLevel(logging.WARNING)
-logging.getLogger('google.generativeai').setLevel(logging.WARNING)
-
+# Cargar variables de entorno
 load_dotenv()
-
-# Configuración de Gemini
-api_key = os.getenv('GOOGLE_API_KEY')
-if not api_key:
-    logging.error("GOOGLE_API_KEY no está configurada en el archivo .env")
-    exit("Error crítico: Falta GOOGLE_API_KEY.")
-genai.configure(api_key=api_key)
 
 # Configuración de OAuth2
 CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
@@ -53,8 +28,6 @@ def authenticate_google() -> Optional[Credentials]:
         try:
             with open(CREDENTIALS_PATH, 'rb') as token_file:
                 creds = pickle.load(token_file)
-            # Podemos quitar este log o dejarlo en INFO si se considera útil al inicio
-            # logging.info(f"Credenciales válidas cargadas desde {CREDENTIALS_PATH}") 
         except Exception as e:
              logging.warning(f"No se pudieron cargar credenciales desde {CREDENTIALS_PATH} ({e}). Se intentará nueva autenticación.")
              creds = None
@@ -70,7 +43,6 @@ def authenticate_google() -> Optional[Credentials]:
                 if os.path.exists(CREDENTIALS_PATH):
                     try:
                         os.remove(CREDENTIALS_PATH)
-                        # logging.info(f"Archivo de credenciales inválido eliminado: {CREDENTIALS_PATH}") # Ya no es necesario loggear esto
                     except OSError as remove_err:
                         logging.error(f"No se pudo eliminar {CREDENTIALS_PATH}: {remove_err}")
                 creds = None
@@ -95,11 +67,9 @@ def authenticate_google() -> Optional[Credentials]:
              except Exception as e:
                   logging.error(f"Error al guardar credenciales en {CREDENTIALS_PATH}: {e}")
 
-    # Solo retornar si son válidas al final
     if creds and creds.valid:
         return creds
     else:
-        # Si llegamos aquí sin creds válidas después de intentar todo, retornamos None
         logging.warning("No se pudieron obtener credenciales válidas.")
         return None
 
@@ -108,7 +78,6 @@ def _parse_datetime_str(datetime_str: str, default_tz=timezone.utc) -> Optional[
     if not datetime_str: return None
     try:
         dt = parser.parse(datetime_str)
-        # Si no tiene información de timezone, asumir UTC (o podríamos usar una local)
         if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
             dt = dt.replace(tzinfo=default_tz) 
         return dt.isoformat()
@@ -120,7 +89,6 @@ def get_current_datetime() -> Dict[str, str]:
     """Obtiene la fecha y hora actual del sistema en formato ISO 8601 con timezone."""
     now = datetime.now().astimezone()
     now_iso = now.isoformat()
-    # Cambiar a DEBUG
     logging.debug(f"Ejecutando: get_current_datetime -> {now_iso}") 
     return {"status": "success", "current_datetime_iso": now_iso}
 
@@ -138,11 +106,9 @@ def create_calendar_event(summary: str, start_time: str, end_time: str,
         event_body = { 'summary': summary, 'description': description, 'location': location,
                        'start': {'dateTime': parsed_start}, 'end': {'dateTime': parsed_end},
                        'attendees': [{'email': email} for email in attendees_list] }
-        # Cambiar a DEBUG
         logging.debug(f"Ejecutando: Crear evento '{summary}'") 
         created_event = service.events().insert(calendarId='primary', body=event_body).execute()
         event_id = created_event.get('id')
-        # Cambiar a DEBUG
         logging.debug(f"Éxito: Evento creado con ID: {event_id}") 
         return { 'status': 'success', 'event_id': event_id, 'htmlLink': created_event.get('htmlLink') }
     except HttpError as error:
@@ -157,10 +123,8 @@ def list_calendar_events(time_min: str, time_max: str, max_results: int) -> Dict
     creds = authenticate_google()
     if not creds: return {"status": "error", "message": "Autenticación requerida."}
 
-    # Parsear y validar fechas/max_results (ahora siempre esperados)
     parsed_time_min = _parse_datetime_str(time_min) 
     parsed_time_max = _parse_datetime_str(time_max)
-    # Asumir que max_results es un int válido (instrucción al LLM)
     safe_max_results = max(1, max_results) if isinstance(max_results, int) else 10 
 
     if not parsed_time_min or not parsed_time_max:
@@ -168,14 +132,11 @@ def list_calendar_events(time_min: str, time_max: str, max_results: int) -> Dict
 
     try:
         service = build('calendar', 'v3', credentials=creds)
-        # Usar directamente los valores parseados/validados
-        # Cambiar a DEBUG
         logging.debug(f"Ejecutando: Listar eventos ({parsed_time_min} a {parsed_time_max}, max:{safe_max_results})") 
         events_result = service.events().list( calendarId='primary', timeMin=parsed_time_min,
                                                timeMax=parsed_time_max, maxResults=safe_max_results,
                                                singleEvents=True, orderBy='startTime' ).execute()
         events = events_result.get('items', [])
-        # Cambiar a DEBUG
         logging.debug(f"Éxito: Encontrados {len(events)} eventos.") 
         return { 'status': 'success', 'events': [ { 'summary': event.get('summary', ''),
                                                     'start': event.get('start', {}).get('dateTime', event.get('start', {}).get('date')),
@@ -189,8 +150,8 @@ def list_calendar_events(time_min: str, time_max: str, max_results: int) -> Dict
         logging.error(f"Fallo inesperado (listar eventos): {e}", exc_info=True)
         return {"status": "error", "message": "Error inesperado del servidor."}
 
-# Agente (Instrucciones más estrictas)
-calendar_agent = LlmAgent(
+# Crear y exportar el agente principal
+root_agent = LlmAgent(
     model=MODEL_NAME,
     name='calendar_assistant',
     instruction='''Eres un asistente especializado **únicamente** en gestionar eventos en Google Calendar.
@@ -213,58 +174,3 @@ calendar_agent = LlmAgent(
     Finalmente, responde al usuario confirmando la acción realizada o informando del error si ocurrió uno durante la gestión del calendario.''',
     tools=[get_current_datetime, create_calendar_event, list_calendar_events],
 )
-
-async def async_main():
-    session_service = InMemorySessionService()
-    artifacts_service = InMemoryArtifactService()
-    session = session_service.create_session(app_name='calendar_app', user_id='user')
-    runner = Runner(app_name='calendar_app', agent=calendar_agent,
-                    artifact_service=artifacts_service, session_service=session_service)
-    
-    # Mantener estos INFO iniciales
-    logging.info("Bienvenido al Asistente de Google Calendar")
-    logging.info("Verificando credenciales de Google Calendar...")
-    if not authenticate_google():
-        logging.error("No se pudo autenticar con Google Calendar. Las herramientas de calendario no funcionarán.")
-    else:
-        logging.info("Autenticación con Google Calendar verificada.")
-        
-    while True:
-        try:
-            query = input("\n¿Qué te gustaría hacer? (o 'salir' para terminar): ")
-            if query.lower() == 'salir':
-                logging.info("Saliendo del asistente.") # Mantener este INFO
-                break
-            
-            content = types.Content(role='user', parts=[types.Part(text=query)])
-            events_async = runner.run_async(session_id=session.id, user_id='user', new_message=content)
-            
-            final_response_text = None
-            async for event in events_async:
-                # Quitar logs internos del bucle
-                if event.is_final_response():
-                    if hasattr(event, 'content') and hasattr(event.content, 'parts'):
-                         for part in event.content.parts:
-                              if hasattr(part, 'text') and part.text:
-                                   final_response_text = part.text
-                                   break 
-                    break 
-            
-            if final_response_text:
-                print(f"\nRespuesta: {final_response_text}")
-            else:
-                logging.warning("La ejecución del agente terminó sin una respuesta final de texto.")
-
-        except KeyboardInterrupt:
-            print("\nSaliendo...")
-            break
-        except Exception as e:
-             logging.error(f"Error durante la interacción: {e}", exc_info=True)
-             print("\nOcurrió un error inesperado. Por favor, intenta de nuevo.")
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(async_main())
-    except Exception as e:
-        logging.critical(f"Error fatal al iniciar el programa: {e}")
-        traceback.print_exc()

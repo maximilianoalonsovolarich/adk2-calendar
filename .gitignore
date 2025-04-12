@@ -1,0 +1,20 @@
+# Entorno virtual
+.venv/
+
+# Archivo de variables de entorno
+.env
+
+# Archivo de credenciales de usuario (OAuth)
+credentials.json
+
+# Archivo de secretos de cliente (OAuth)
+client_secrets.json
+
+# Archivos compilados de Python
+__pycache__/
+*.py[cod]
+
+# Archivos específicos del editor/SO (opcional)
+.vscode/
+.idea/
+*.DS_Store 

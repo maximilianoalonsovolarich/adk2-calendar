@@ -21,15 +21,15 @@ import asyncio
 import google.generativeai as genai
 import traceback
 
-# Configuración de logging principal (nuestro código)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configuración de logging principal (nivel WARNING para producción)
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Reducir verbosidad de bibliotecas de Google y ADK
+# Reducir verbosidad de bibliotecas (ya está bien en WARNING/ERROR)
 logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
 logging.getLogger('googleapiclient.discovery').setLevel(logging.WARNING) 
 logging.getLogger('google.auth.transport.requests').setLevel(logging.WARNING)
-logging.getLogger('google.adk').setLevel(logging.WARNING) # Logger raíz de ADK
-logging.getLogger('google.generativeai').setLevel(logging.WARNING) # Logger de Gemini
+logging.getLogger('google.adk').setLevel(logging.WARNING)
+logging.getLogger('google.generativeai').setLevel(logging.WARNING)
 
 load_dotenv()
 
@@ -53,7 +53,8 @@ def authenticate_google() -> Optional[Credentials]:
         try:
             with open(CREDENTIALS_PATH, 'rb') as token_file:
                 creds = pickle.load(token_file)
-            # logging.info(f"Credenciales válidas cargadas desde {CREDENTIALS_PATH}") # Menos verboso
+            # Podemos quitar este log o dejarlo en INFO si se considera útil al inicio
+            # logging.info(f"Credenciales válidas cargadas desde {CREDENTIALS_PATH}") 
         except Exception as e:
              logging.warning(f"No se pudieron cargar credenciales desde {CREDENTIALS_PATH} ({e}). Se intentará nueva autenticación.")
              creds = None
@@ -119,7 +120,8 @@ def get_current_datetime() -> Dict[str, str]:
     """Obtiene la fecha y hora actual del sistema en formato ISO 8601 con timezone."""
     now = datetime.now().astimezone()
     now_iso = now.isoformat()
-    logging.info(f"Ejecutando: get_current_datetime -> {now_iso}")
+    # Cambiar a DEBUG
+    logging.debug(f"Ejecutando: get_current_datetime -> {now_iso}") 
     return {"status": "success", "current_datetime_iso": now_iso}
 
 def create_calendar_event(summary: str, start_time: str, end_time: str,
@@ -136,10 +138,12 @@ def create_calendar_event(summary: str, start_time: str, end_time: str,
         event_body = { 'summary': summary, 'description': description, 'location': location,
                        'start': {'dateTime': parsed_start}, 'end': {'dateTime': parsed_end},
                        'attendees': [{'email': email} for email in attendees_list] }
-        logging.info(f"Ejecutando: Crear evento '{summary}'")
+        # Cambiar a DEBUG
+        logging.debug(f"Ejecutando: Crear evento '{summary}'") 
         created_event = service.events().insert(calendarId='primary', body=event_body).execute()
         event_id = created_event.get('id')
-        logging.info(f"Éxito: Evento creado con ID: {event_id}")
+        # Cambiar a DEBUG
+        logging.debug(f"Éxito: Evento creado con ID: {event_id}") 
         return { 'status': 'success', 'event_id': event_id, 'htmlLink': created_event.get('htmlLink') }
     except HttpError as error:
         logging.error(f"Fallo API Google (crear evento): {error.resp.status} {error.reason}")
@@ -160,17 +164,19 @@ def list_calendar_events(time_min: str, time_max: str, max_results: int) -> Dict
     safe_max_results = max(1, max_results) if isinstance(max_results, int) else 10 
 
     if not parsed_time_min or not parsed_time_max:
-        return {"status": "error", "message": "Formato de fecha/hora inválido. Usar ISO 8601."}
+        return {"status": "error", "message": "Formato de fecha/hora inválido para rango. Usar ISO 8601."}
 
     try:
         service = build('calendar', 'v3', credentials=creds)
         # Usar directamente los valores parseados/validados
-        logging.info(f"Ejecutando: Listar eventos ({parsed_time_min} a {parsed_time_max}, max:{safe_max_results})")
+        # Cambiar a DEBUG
+        logging.debug(f"Ejecutando: Listar eventos ({parsed_time_min} a {parsed_time_max}, max:{safe_max_results})") 
         events_result = service.events().list( calendarId='primary', timeMin=parsed_time_min,
                                                timeMax=parsed_time_max, maxResults=safe_max_results,
                                                singleEvents=True, orderBy='startTime' ).execute()
         events = events_result.get('items', [])
-        logging.info(f"Éxito: Encontrados {len(events)} eventos.")
+        # Cambiar a DEBUG
+        logging.debug(f"Éxito: Encontrados {len(events)} eventos.") 
         return { 'status': 'success', 'events': [ { 'summary': event.get('summary', ''),
                                                     'start': event.get('start', {}).get('dateTime', event.get('start', {}).get('date')),
                                                     'end': event.get('end', {}).get('dateTime', event.get('end', {}).get('date')),
@@ -183,29 +189,28 @@ def list_calendar_events(time_min: str, time_max: str, max_results: int) -> Dict
         logging.error(f"Fallo inesperado (listar eventos): {e}", exc_info=True)
         return {"status": "error", "message": "Error inesperado del servidor."}
 
-# Agente (Instrucciones MÁS estrictas sobre cálculo de fechas)
+# Agente (Instrucciones más estrictas)
 calendar_agent = LlmAgent(
     model=MODEL_NAME,
     name='calendar_assistant',
-    instruction='''Eres un asistente para gestionar eventos en Google Calendar.
+    instruction='''Eres un asistente especializado **únicamente** en gestionar eventos en Google Calendar.
     Tienes acceso a estas herramientas: `get_current_datetime`, `create_calendar_event`, `list_calendar_events`.
 
-    **FLUJO IMPORTANTE PARA FECHAS RELATIVAS (hoy, ahora, mañana...):**
-    1.  Si el usuario menciona "hoy", "ahora", "mañana", o cualquier fecha relativa, **PRIMERO** llama a `get_current_datetime` para obtener la fecha/hora actual real.
-    2.  **LUEGO**, usa la fecha/hora de la respuesta de `get_current_datetime` para calcular los argumentos requeridos (`start_time`, `end_time`, `time_min`, `time_max`) en el formato ISO 8601 correcto (ej: 2025-04-12T09:00:00-05:00) antes de llamar a `create_calendar_event` o `list_calendar_events`.
-    3.  Asume siempre la zona horaria America/Guayaquil (-05:00) para los cálculos si el usuario no especifica otra.
+    **TU ÚNICA FUNCIÓN es crear y listar eventos de calendario según las peticiones del usuario.**
+
+    **FLUJO PARA FECHAS RELATIVAS (hoy, ahora, mañana...):**
+    1. Si el usuario usa una fecha relativa, PRIMERO llama a `get_current_datetime`.
+    2. LUEGO, usa la fecha/hora de la respuesta para calcular los argumentos ISO 8601 (`start_time`, `end_time`, `time_min`, `time_max`) antes de llamar a las herramientas de calendario.
+    3. Asume siempre America/Guayaquil (-05:00) si no se especifica otra timezone.
 
     **REGLAS PARA LLAMAR A LAS HERRAMIENTAS DE CALENDARIO:**
-    -   `create_calendar_event` y `list_calendar_events` requieren SIEMPRE *todos* sus argumentos.
-    -   Para `create_calendar_event`:
-        -   Calcula `start_time` y `end_time` (asume 1h duración si no se dice).
-        -   Si el usuario no da descripción/ubicación, usa `description=""` y `location=""`.
-        -   Si no da asistentes, usa `attendees=[]`.
-    -   Para `list_calendar_events`:
-        -   Calcula `time_min` (inicio del día correspondiente) y `time_max` (fin del día correspondiente).
-        -   Si el usuario no dice cuántos, usa `max_results=10`.
+    - `create_calendar_event` y `list_calendar_events` requieren SIEMPRE *todos* sus argumentos.
+    - Para `create_calendar_event`: Calcula `start_time`/`end_time` (1h duración por defecto). Usa `description=""`, `location=""`, `attendees=[]` si no se especifican.
+    - Para `list_calendar_events`: Calcula `time_min` (inicio día) y `time_max` (fin día). Usa `max_results=10` si no se especifica.
 
-    Responde al usuario confirmando la acción o informando del error.''',
+    **IMPORTANTE:** Si el usuario te pide realizar cualquier otra tarea que no sea crear o listar eventos de calendario (ej: cálculos matemáticos, preguntas generales, etc.), **debes responder educadamente que no puedes realizar esa solicitud**, ya que tu única función es gestionar el calendario.
+
+    Finalmente, responde al usuario confirmando la acción realizada o informando del error si ocurrió uno durante la gestión del calendario.''',
     tools=[get_current_datetime, create_calendar_event, list_calendar_events],
 )
 
@@ -216,12 +221,11 @@ async def async_main():
     runner = Runner(app_name='calendar_app', agent=calendar_agent,
                     artifact_service=artifacts_service, session_service=session_service)
     
+    # Mantener estos INFO iniciales
     logging.info("Bienvenido al Asistente de Google Calendar")
     logging.info("Verificando credenciales de Google Calendar...")
     if not authenticate_google():
         logging.error("No se pudo autenticar con Google Calendar. Las herramientas de calendario no funcionarán.")
-        # Considerar salir si la autenticación es esencial
-        # return
     else:
         logging.info("Autenticación con Google Calendar verificada.")
         
@@ -229,7 +233,7 @@ async def async_main():
         try:
             query = input("\n¿Qué te gustaría hacer? (o 'salir' para terminar): ")
             if query.lower() == 'salir':
-                logging.info("Saliendo del asistente.")
+                logging.info("Saliendo del asistente.") # Mantener este INFO
                 break
             
             content = types.Content(role='user', parts=[types.Part(text=query)])
@@ -237,23 +241,15 @@ async def async_main():
             
             final_response_text = None
             async for event in events_async:
-                if not hasattr(event, 'content') or not hasattr(event.content, 'parts'):
-                    continue
-                
-                for part in event.content.parts:
-                    if hasattr(part, 'function_call') and part.function_call:
-                        fc = part.function_call
-                        logging.info(f"Llamando función: {fc.name}")
-                        logging.info(f"Args: {fc.args}") # REACTIVADO para depuración
-                    elif hasattr(part, 'function_response') and part.function_response:
-                        # No necesitamos loggear esto explícitamente, la respuesta final lo hará
-                        pass 
-                    elif hasattr(part, 'text') and part.text:
-                        if event.is_final_response():
-                             final_response_text = part.text
-                             # No romper bucles aquí para asegurar que procesamos todo
+                # Quitar logs internos del bucle
+                if event.is_final_response():
+                    if hasattr(event, 'content') and hasattr(event.content, 'parts'):
+                         for part in event.content.parts:
+                              if hasattr(part, 'text') and part.text:
+                                   final_response_text = part.text
+                                   break 
+                    break 
             
-            # Imprimir la respuesta final después de procesar todos los eventos
             if final_response_text:
                 print(f"\nRespuesta: {final_response_text}")
             else:

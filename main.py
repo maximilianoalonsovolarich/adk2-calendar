@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-import os
 import sys
 import subprocess
+from logging_config import configure_logging
 
-# Ejecuta "adk web" mediante subprocess
+configure_logging()  # Configura el logging de acuerdo al entorno
+
 try:
-    # Ejecutamos el comando adk web y redirigimos la salida al terminal.
+    # Ejecuta "adk web" para iniciar el servidor del ADK
     subprocess.run(["adk", "web"], check=True)
 except subprocess.CalledProcessError as e:
     sys.exit(f"Error al ejecutar 'adk web': {e}")

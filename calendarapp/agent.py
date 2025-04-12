@@ -18,7 +18,7 @@ load_dotenv()
 # Configuración de OAuth2
 CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
 CLIENT_SECRETS_PATH = os.getenv('GOOGLE_CLIENT_SECRETS_PATH', 'client_secrets.json')
-MODEL_NAME = os.getenv('MODEL_NAME', 'gemini-2.0-flash')
+MODEL_NAME = os.getenv('MODEL_NAME')
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 def authenticate_google() -> Optional[Credentials]:
@@ -150,8 +150,8 @@ def list_calendar_events(time_min: str, time_max: str, max_results: int) -> Dict
         logging.error(f"Fallo inesperado (listar eventos): {e}", exc_info=True)
         return {"status": "error", "message": "Error inesperado del servidor."}
 
-# Crear y exportar el agente principal
-root_agent = LlmAgent(
+# Crear el agente de calendario
+calendar_assistant = LlmAgent(
     model=MODEL_NAME,
     name='calendar_assistant',
     instruction='''Eres un asistente especializado **únicamente** en gestionar eventos en Google Calendar.
@@ -169,8 +169,57 @@ root_agent = LlmAgent(
     - Para `create_calendar_event`: Calcula `start_time`/`end_time` (1h duración por defecto). Usa `description=""`, `location=""`, `attendees=[]` si no se especifican.
     - Para `list_calendar_events`: Calcula `time_min` (inicio día) y `time_max` (fin día). Usa `max_results=10` si no se especifica.
 
-    **IMPORTANTE:** Si el usuario te pide realizar cualquier otra tarea que no sea crear o listar eventos de calendario (ej: cálculos matemáticos, preguntas generales, etc.), **debes responder educadamente que no puedes realizar esa solicitud**, ya que tu única función es gestionar el calendario.
+    **MUY IMPORTANTE - DELEGACIÓN DE CONSULTAS:**
+    Si el usuario te pide información que NO está relacionada con gestionar eventos de calendario 
+    (como "qué es X", "cómo funciona Y", consultas generales de conocimiento), 
+    DEBES usar la función `transfer_to_agent` con el parámetro `agent_name="search_assistant"` 
+    para transferir esa consulta al agente especializado en búsquedas e información general.
 
-    Finalmente, responde al usuario confirmando la acción realizada o informando del error si ocurrió uno durante la gestión del calendario.''',
+    NO respondas que "no puedes realizar esa solicitud" - usa `transfer_to_agent` en su lugar.
+    
+    Ejemplos de consultas que debes transferir:
+    - "Qué es un dálmata" → transferir a search_assistant
+    - "Información sobre París" → transferir a search_assistant
+    - "Quién inventó la bombilla" → transferir a search_assistant
+
+    Finalmente, para consultas que SÍ son sobre calendario, responde confirmando la acción 
+    realizada o informando del error si ocurrió uno durante la gestión del calendario.''',
     tools=[get_current_datetime, create_calendar_event, list_calendar_events],
+)
+
+# Importar el agente de búsqueda desde agent2.py
+from . import agent2
+
+# Crear el agente coordinador que usa tanto el agente de calendario como el de búsqueda
+root_agent = LlmAgent(
+    model=MODEL_NAME,
+    name='coordinator_agent',
+    description="Agente coordinador que delega solicitudes a agentes especializados",
+    instruction="""Eres un asistente que coordina solicitudes entre dos agentes especializados:
+    
+    1. **calendar_assistant**: Para gestión de eventos de calendario (crear y listar eventos)
+    2. **search_assistant**: Para búsquedas de información en Internet y respuestas a preguntas generales
+    
+    **INSTRUCCIONES DETALLADAS PARA COORDINAR:**
+    
+    - CALENDARIO: Si el usuario pregunta específicamente sobre crear eventos, listar eventos, o consultar su calendario,
+      DEBES transferir la solicitud al agente **calendar_assistant** usando la función `transfer_to_agent`.
+      Ejemplos: "Crea un evento", "Qué tengo hoy", "Muestra mi agenda", "Programa una reunión".
+      
+    - BÚSQUEDA/INFORMACIÓN: Si el usuario pide CUALQUIER información general, definiciones, o hace preguntas
+      que NO están relacionadas específicamente con gestionar su calendario personal,
+      DEBES transferir la solicitud al agente **search_assistant** usando la función `transfer_to_agent`.
+      Ejemplos: "Qué es la IA", "Cuál es la capital de Francia", "Dime sobre machine learning", "Busca información".
+    
+    - ANÁLISIS DE INTENCIÓN: 
+      * Si la solicitud contiene palabras como "crear", "agendar", "programar", "evento", "cita", "mostrar calendario" → calendar_assistant
+      * Si la solicitud contiene palabras como "qué es", "definición", "busca", "información", "explica" → search_assistant
+    
+    - NUNCA intentes responder directamente a las solicitudes.
+    - NUNCA ignores una solicitud de búsqueda de información diciéndole al usuario que no puedes hacerlo.
+    - Si tienes dudas sobre qué agente usar, elige search_assistant para preguntas generales de información.
+    
+    Tu ÚNICO trabajo es transferir cada solicitud al agente correcto. No intentes resolver la solicitud tú mismo.
+    """,
+    sub_agents=[calendar_assistant, agent2.root_agent]
 )
